@@ -1,0 +1,110 @@
+name: Publish reviewed API Docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Reviewed linux/amd64 image tag
+        required: true
+        default: reviewed-20261111-v1.1
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-reviewed-api
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/rustdesk-api-reviewed
+  IMAGE_TAG: ${{ inputs.tag }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Validate image tag
+        run: '[[ "$IMAGE_TAG" =~ ^reviewed-[a-zA-Z0-9_.-]+$ ]]'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.23.10"
+      - name: Test reviewed API changes
+        run: |
+          go mod verify
+          go test -mod=readonly -race ./lib/jwt ./http/controller/api ./global
+          go vet -mod=readonly ./lib/jwt
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: lejianwen/rustdesk-api-web
+          ref: 3998c2a9213fcd047252776d0f0db33e6717026c
+          path: rustdesk-api-web
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+      - name: Build pinned admin frontend
+        working-directory: rustdesk-api-web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          mkdir -p ../resources/admin
+          cp -a dist/. ../resources/admin/
+      - name: Compile static amd64 API
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y musl-tools
+          mkdir -p amd64/release/data amd64/release/runtime
+          printf '%s\n' "$IMAGE_TAG" > resources/version
+          GOOS=linux GOARCH=amd64 CC=musl-gcc CGO_ENABLED=1 CGO_LDFLAGS="-static" \
+            go build -mod=readonly -ldflags="-s -w" -o amd64/release/apimain ./cmd/apimain.go
+          cp -a conf resources docs amd64/release/
+          sha256sum amd64/release/apimain
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build candidate image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          build-args: BUILDARCH=amd64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+      - name: Smoke-test API and admin
+        run: |
+          trap 'docker rm -f reviewed-api-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name reviewed-api-smoke -p 127.0.0.1:21114:21114 \
+            -e RUSTDESK_API_LOGGER_LEVEL=error "$IMAGE:$IMAGE_TAG" >/dev/null
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:21114/api/ -o /dev/null 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          curl -fsS http://127.0.0.1:21114/api/version -o /dev/null
+          curl -fsS http://127.0.0.1:21114/_admin/ -o "$RUNNER_TEMP/admin.html"
+          grep -q '<html' "$RUNNER_TEMP/admin.html"
+          test "$(docker inspect -f '{{.State.Running}}' reviewed-api-smoke)" = true
+          test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE:$IMAGE_TAG")" = linux/amd64
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested image
+        run: |
+          docker push "$IMAGE:$IMAGE_TAG"
+          docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"

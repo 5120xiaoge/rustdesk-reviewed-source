@@ -1,0 +1,121 @@
+name: Publish reviewed server API Docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      api-image:
+        description: Public reviewed API image pinned by sha256 digest
+        required: true
+        type: string
+      tag:
+        description: Reviewed linux/amd64 image tag
+        required: true
+        default: reviewed-20261111-v1.1
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-reviewed-server
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/rustdesk-server-s6-reviewed
+  IMAGE_TAG: ${{ inputs.tag }}
+  API_IMAGE: ${{ inputs.api-image }}
+  API_IMAGE_PREFIX: "ghcr.io/${{ github.repository_owner }}/rustdesk-api-reviewed@sha256:"
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+  CC_x86_64_unknown_linux_musl: musl-gcc
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate publication inputs
+        run: |
+          [[ "$IMAGE_TAG" =~ ^reviewed-[a-zA-Z0-9_.-]+$ ]]
+          [[ "$API_IMAGE" == "$API_IMAGE_PREFIX"* ]]
+          [[ "${API_IMAGE#"$API_IMAGE_PREFIX"}" =~ ^[a-f0-9]{64}$ ]]
+      - name: Install native musl build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y musl-tools protobuf-compiler
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Test JWT and key-file validation
+        run: cargo test --locked --test jwt_tests --test key_file_tests
+      - name: Compile static amd64 server
+        run: |
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bins
+          install -m 0755 target/x86_64-unknown-linux-musl/release/{hbbs,hbbr,rustdesk-utils} docker/rootfs/usr/bin/
+          install -D -m 0644 LICENSE docker/rootfs/usr/share/licenses/rustdesk-server/LICENSE
+          sha256sum docker/rootfs/usr/bin/{hbbs,hbbr,rustdesk-utils}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build candidate integrated image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: docker
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            API_IMAGE=${{ env.API_IMAGE }}
+            S6_ARCH=x86_64
+            S6_OVERLAY_VERSION=3.2.0.0
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+            org.opencontainers.image.base.name=${{ env.API_IMAGE }}
+      - name: Smoke-test S6 services, endpoints and key restart
+        run: |
+          trap 'docker rm -f reviewed-server-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name reviewed-server-smoke -p 127.0.0.1:21114:21114 \
+            -p 127.0.0.1:21115:21115 -p 127.0.0.1:21116:21116 \
+            -p 127.0.0.1:21117:21117 -p 127.0.0.1:21118:21118 \
+            -p 127.0.0.1:21119:21119 -e RELAY=127.0.0.1:21117 \
+            -e RUSTDESK_API_LOGGER_LEVEL=error "$IMAGE:$IMAGE_TAG" >/dev/null
+          wait_healthy() {
+            for attempt in $(seq 1 60); do
+              if [ "$(docker inspect -f '{{.State.Health.Status}}' reviewed-server-smoke)" = healthy ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          wait_healthy
+          curl -fsS http://127.0.0.1:21114/api/version -o /dev/null
+          curl -fsS http://127.0.0.1:21114/_admin/ -o "$RUNNER_TEMP/admin.html"
+          grep -q '<html' "$RUNNER_TEMP/admin.html"
+          for port in 21115 21116 21117 21118 21119; do
+            timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$port"
+          done
+          docker exec reviewed-server-smoke sh -c \
+            'test -s /data/id_ed25519 && test -s /data/id_ed25519.pub'
+          docker exec reviewed-server-smoke rustdesk-utils validatekeypair-files \
+            /data/id_ed25519.pub /data/id_ed25519
+          docker restart reviewed-server-smoke >/dev/null
+          wait_healthy
+          test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE:$IMAGE_TAG")" = linux/amd64
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested integrated image
+        run: |
+          docker push "$IMAGE:$IMAGE_TAG"
+          docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"

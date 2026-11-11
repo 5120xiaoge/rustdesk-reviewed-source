@@ -1,0 +1,7 @@
+.idea
+runtime/*
+!runtime
+!runtime/cache/.gitkeep
+resources/admin
+release
+data/rustdeskapi.db

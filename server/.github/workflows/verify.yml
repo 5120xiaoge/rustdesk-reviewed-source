@@ -1,0 +1,42 @@
+name: Verify server
+
+on:
+  workflow_dispatch:
+    inputs:
+      repair-lock:
+        description: Reconcile the existing lockfile with the manifest
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Reconcile stale dependency lockfile
+        if: ${{ inputs.repair-lock }}
+        run: cargo metadata --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+      - name: Retain reconciled lockfile
+        if: ${{ inputs.repair-lock && always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: server-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+      - name: Test JWT validation
+        run: cargo test --locked --test jwt_tests
+      - name: Test key-file validation
+        run: cargo test --locked --test key_file_tests
+      - name: Compile server binaries
+        run: cargo build --locked --bins

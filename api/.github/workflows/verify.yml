@@ -1,0 +1,63 @@
+name: Verify API
+
+on:
+  workflow_dispatch:
+    inputs:
+      repair-lock:
+        description: Resolve the existing missing dependency checksums
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.10"
+      - name: Resolve missing dependency checksums
+        if: ${{ inputs.repair-lock }}
+        run: |
+          go mod download all
+          go mod verify
+      - name: Retain resolved checksums
+        if: ${{ inputs.repair-lock && always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: api-go-sum
+          path: go.sum
+          if-no-files-found: error
+      - name: Check formatting
+        run: test -z "$(gofmt -l lib/jwt/jwt.go lib/jwt/jwt_test.go http/controller/api/ab_test.go global/i18n_test.go)"
+      - name: Test and vet JWT validation
+        run: |
+          go test -mod=readonly -race ./lib/jwt
+          go vet -mod=readonly ./lib/jwt
+      - name: Test address book input and language initialization
+        run: go test -mod=readonly -race ./http/controller/api ./global
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: lejianwen/rustdesk-api-web
+          ref: 3998c2a9213fcd047252776d0f0db33e6717026c
+          path: rustdesk-api-web
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build admin frontend
+        working-directory: rustdesk-api-web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          mkdir -p ../resources/admin
+          cp -a dist/. ../resources/admin/
+      - name: Compile API
+        run: go build -mod=readonly -o "$RUNNER_TEMP/apimain" ./cmd/apimain.go
