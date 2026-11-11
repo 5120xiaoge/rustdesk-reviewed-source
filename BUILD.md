@@ -28,10 +28,10 @@ cp -a web/dist/. api/resources/admin/
 (
   cd api
   go mod verify
-  go test -mod=readonly -race ./lib/jwt ./http/controller/api ./global
-  go vet -mod=readonly ./lib/jwt
+  go test -mod=readonly -race ./lib/jwt ./lib/bootstrap ./http/controller/api ./global
+  go vet -mod=readonly ./lib/jwt ./lib/bootstrap
   mkdir -p amd64/release/data amd64/release/runtime
-  printf '%s\n' reviewed-20261111-v1.1 > resources/version
+  printf '%s\n' reviewed-20261111-v1.2 > resources/version
   GOOS=linux GOARCH=amd64 CC=musl-gcc CGO_ENABLED=1 CGO_LDFLAGS="-static" \
     go build -mod=readonly -ldflags="-s -w" -o amd64/release/apimain ./cmd/apimain.go
   cp -a conf resources docs amd64/release/
@@ -65,7 +65,7 @@ To build with the exact published API base instead of rebuilding it, replace the
 `API_IMAGE` build argument with:
 
 ```text
-ghcr.io/5120xiaoge/rustdesk-api-reviewed@sha256:009023db119d2b625574f19bde144495d790de3ee5d248393e8329bb56f1cf42
+ghcr.io/5120xiaoge/rustdesk-api-reviewed@sha256:3499576cdc034c3e9f280193ad8c9a58d2d260f0a9d53e26a6dacc851b6e082a
 ```
 
 All commands above are local builds and tests; they do not push images or change a

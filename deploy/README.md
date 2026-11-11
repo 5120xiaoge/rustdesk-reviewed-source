@@ -1,27 +1,26 @@
 # Deploy with Docker Compose
 
-This example is for Debian x86_64 and the delivered custom RustDesk 1.5.1 clients:
-ID `rust.520kx.dpdns.org:22116`, relay `rust.520kx.dpdns.org:22117`, and API
-`https://rust.520kx.dpdns.org`.
+This original-style Compose example is for a new Debian x86_64 server.
+Replace `117.24.15.98` with the server's actual public address and adjust published
+ports and advertised addresses together. YAML is configuration, not a Bash command.
 
 ## Prerequisites
 
 - The integrated GHCR image must be publicly pullable.
-- `/data/rustdesk/server` must be the existing server directory containing the
-  matching `id_ed25519` and `id_ed25519.pub` pair, not a newly created empty directory.
-- `/data/rustdesk/api` must be the existing API database directory. If either path
-  differs, edit the bind source first. Bind mounts do not auto-create missing paths.
-- Check the public key locally against the delivered clients. Never send the private
-  key. Starting with a different key pair will break those clients.
-- The domain must resolve to the server, and firewall rules must allow TCP 22115-22119
-  and UDP 22116.
-- A host-side HTTPS reverse proxy must forward the domain's API/admin traffic to
-  `http://127.0.0.1:21114`. If the proxy runs in Docker, join its network and use the
-  service name/port instead; container localhost is not the host.
+- Short bind mounts auto-create missing server/API directories on first deployment.
+  When both server key files are absent, hbbs creates a new pair. A partial or invalid
+  pair remains an error; never delete existing keys to bypass it.
+- Existing database accounts and keys are retained when the same directories are
+  reused. Back up existing data privately before an upgrade.
+- Firewall/security-group rules must allow the selected TCP ports and UDP ID port.
+- Plain HTTP is provided to match the upstream example, but exposes login traffic
+  on untrusted networks. Use an HTTPS reverse proxy for production API/admin access
+  and set the advertised API URL accordingly.
 - Resolve existing container/port conflicts and back up existing data before an
   upgrade. This example does not stop, remove, migrate, or replace existing services.
-- A new high-entropy JWT key is required. Do not reuse keys posted in a chat or
-  upstream examples. A changed JWT key invalidates existing sessions.
+- With `MUST_LOGIN=Y` and no explicit JWT, the image generates a private persistent
+  JWT under the API data mount. An explicit JWT environment value still takes
+  precedence. Never reuse example or previously disclosed values.
 
 To inspect mounts without dumping environment variables:
 
@@ -33,33 +32,58 @@ docker ps -q | xargs -r docker inspect --format \
 
 ## Start
 
-Run from this `deploy/` directory only after checking the prerequisites.
-Enter the new JWT key privately at the hidden prompt; do not put its literal value
-in a command, the Compose file, shell history, a repository, or chat.
+Use the YAML in a Compose management panel, or save it as `docker-compose.yml` and
+run from its directory. No manual JWT entry or pre-existing key pair is needed for
+a new server.
 
 ```bash
-set -eu
-read -rsp 'New private JWT key: ' RUSTDESK_API_JWT_KEY
-printf '\n'
-export RUSTDESK_API_JWT_KEY
-test -s /data/rustdesk/server/id_ed25519
-test -s /data/rustdesk/server/id_ed25519.pub
-test "$(tr -d '\r\n' < /data/rustdesk/server/id_ed25519.pub)" = \
-  '5rfSBmytgCwTBn7VkE5muQHfnRJkybSf1++Muvz4fEM='
-test -d /data/rustdesk/api
 docker compose config --quiet
 docker compose pull
-docker compose up -d
+docker compose up -d --wait --wait-timeout 180
 docker compose ps
-unset RUSTDESK_API_JWT_KEY
 ```
 
-Only `config --quiet` is used: ordinary `docker compose config` prints interpolated
-secrets. The key is stored in container environment metadata during operation;
-restrict Docker/root access and never share full inspection output. After leaving
-the shell, re-enter the same privately retained key for future Compose updates.
+## Private Bootstrap Credentials
 
-The API retains accounts only when its existing database is reused. A first-time
-database initializes an administrator differently and is not the upgrade path here.
-This repository does not publish passwords or provide unsafe password-in-argument
-reset commands.
+First installation creates administrator `admin` and a random initial password.
+Inside the container the private files are:
+
+- `/app/data/.bootstrap/jwt.key`
+- `/app/data/.bootstrap/admin.password`
+
+On the example host these are under `/data/rustdesk/api/.bootstrap/`.
+The directory is mode 0700 and the files are mode 0600. Passwords and JWT keys are
+not printed to application logs. Keep Docker/root access private and never upload
+these files, include them in a public backup, or paste their contents into a chat.
+Inspect the initial password only in your private server terminal when needed.
+
+To set your own administrator password without including it in command arguments,
+use a hidden prompt and standard input:
+
+```bash
+(
+  set -eu
+  set +x
+  read -rsp 'New administrator password (12-32 bytes): ' ADMIN_PASSWORD </dev/tty
+  printf '\n'
+  printf '%s\n' "$ADMIN_PASSWORD" |
+    docker compose exec -T rustdesk ./apimain reset-admin-pwd --stdin
+  unset ADMIN_PASSWORD
+)
+```
+
+Restart/recreation reuses the JWT and does not reset existing administrators.
+The initial password file is an installation record, not an updated copy of a
+password subsequently changed through the UI or CLI.
+
+## Clients
+
+Read only the server public key:
+
+```bash
+docker compose exec -T rustdesk cat /data/id_ed25519.pub
+```
+
+Clients must use this public key and the advertised addresses. Previously delivered
+custom clients target a different domain/221xx setup and public key. This deployment
+does not rebuild them or prove their embedded settings are GUI-overridable.

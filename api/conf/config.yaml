@@ -60,6 +60,7 @@ proxy:
   host: "http://127.0.0.1:1080"
 jwt:
   key: ""
+  key-file: "./data/.bootstrap/jwt.key"
   expire-duration: 168h
 ldap:
   enable: false

@@ -20,18 +20,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      IMAGE: ghcr.io/5120xiaoge/rustdesk-server-s6-reviewed@sha256:720dbe25a0879475a6403d2a8d301f38b291897040bd9f58d969dbf4f51df093
+      IMAGE: ghcr.io/5120xiaoge/rustdesk-server-s6-reviewed@sha256:bfa791c8cb6662ce157ca4c583df101bdcc44a5d97106d6bd1b3d259b8cf1aae
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - name: Validate Compose without disclosing a key
+      - name: Validate original-style Compose without manual JWT input
         shell: bash
         run: |
           set -eu
-          export RUSTDESK_API_JWT_KEY="$(openssl rand -hex 32)"
           docker compose -f deploy/docker-compose.yml config --quiet
-          unset RUSTDESK_API_JWT_KEY
       - name: Pull with an empty Docker credential directory
         if: inputs.scope == 'anonymous'
         shell: bash
@@ -42,30 +40,33 @@ jobs:
           test ! -e "$DOCKER_CONFIG/config.json"
           docker pull --platform linux/amd64 "$IMAGE"
           test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE")" = linux/amd64
-      - name: Test mandatory-login S6 startup without production mounts
+      - name: Test anonymous original-style Compose first installation and restart
         if: inputs.scope == 'anonymous'
         shell: bash
         run: |
           set -eu
           export DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker"
-          export RUSTDESK_API_JWT_KEY="$(openssl rand -hex 32)"
-          trap 'docker rm -f anonymous-reviewed-smoke >/dev/null 2>&1 || true' EXIT
-          docker run -d --name anonymous-reviewed-smoke \
-            -e RUSTDESK_API_JWT_KEY -e MUST_LOGIN=Y \
-            -e RELAY=rust.520kx.dpdns.org:22117 \
-            -e RUSTDESK_API_RUSTDESK_KEY_FILE=/data/id_ed25519.pub \
-            -e RUSTDESK_API_LOGGER_LEVEL=error "$IMAGE" >/dev/null
-          unset RUSTDESK_API_JWT_KEY
+          test ! -e /data/rustdesk
+          trap 'docker compose -p reviewed-anonymous -f deploy/docker-compose.yml down >/dev/null 2>&1 || true' EXIT
+          docker compose -p reviewed-anonymous -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
+          cid="$(docker compose -p reviewed-anonymous -f deploy/docker-compose.yml ps -q rustdesk)"
+          test -n "$cid"
+          test "$(docker inspect -f '{{.Image}}' "$cid")" = "$(docker image inspect -f '{{.Id}}' "$IMAGE")"
+          docker exec "$cid" wget -q -O /dev/null http://127.0.0.1:21114/api/version
+          docker exec "$cid" wget -q -O /dev/null http://127.0.0.1:21114/_admin/
+          docker exec "$cid" rustdesk-utils validatekeypair-files \
+            /data/id_ed25519.pub /data/id_ed25519 >/dev/null
+          docker exec "$cid" sh -c 'test "$(stat -c %a /app/data/.bootstrap)" = 700 && test "$(stat -c %a /app/data/.bootstrap/jwt.key)" = 600 && test "$(stat -c %a /app/data/.bootstrap/admin.password)" = 600'
+          before="$(docker exec "$cid" sha256sum /data/id_ed25519 /data/id_ed25519.pub /app/data/.bootstrap/jwt.key /app/data/.bootstrap/admin.password)"
+          docker restart "$cid" >/dev/null
           ready=false
-          for attempt in $(seq 1 60); do
-            if [ "$(docker inspect -f '{{.State.Health.Status}}' anonymous-reviewed-smoke)" = healthy ]; then
+          for attempt in $(seq 1 90); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy ]; then
               ready=true
               break
             fi
             sleep 2
           done
           test "$ready" = true
-          docker exec anonymous-reviewed-smoke wget -q -O /dev/null http://127.0.0.1:21114/api/version
-          docker exec anonymous-reviewed-smoke wget -q -O /dev/null http://127.0.0.1:21114/_admin/
-          docker exec anonymous-reviewed-smoke rustdesk-utils validatekeypair-files \
-            /data/id_ed25519.pub /data/id_ed25519 >/dev/null
+          after="$(docker exec "$cid" sha256sum /data/id_ed25519 /data/id_ed25519.pub /app/data/.bootstrap/jwt.key /app/data/.bootstrap/admin.password)"
+          test "$before" = "$after"

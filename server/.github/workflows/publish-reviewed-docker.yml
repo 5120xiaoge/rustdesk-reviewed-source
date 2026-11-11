@@ -10,7 +10,7 @@ on:
       tag:
         description: Reviewed linux/amd64 image tag
         required: true
-        default: reviewed-20261111-v1.1
+        default: reviewed-20261111-v1.2
         type: string
 
 permissions:
@@ -110,6 +110,8 @@ jobs:
           docker restart reviewed-server-smoke >/dev/null
           wait_healthy
           test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE:$IMAGE_TAG")" = linux/amd64
+      - name: Verify first installation and credential persistence without JWT input
+        run: python3 docker/verify-fresh-install.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io

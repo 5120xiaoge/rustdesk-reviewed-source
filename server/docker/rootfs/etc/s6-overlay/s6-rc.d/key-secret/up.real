@@ -56,3 +56,11 @@ if [ -f /data/id_ed25519.pub ] && [ -f /data/id_ed25519 ] ; then
 fi
 
 # if we have no keypair, hbbs will generate one
+
+if [ -z "${RUSTDESK_API_JWT_KEY:-}" ] && [ "$(printf '%s' "${MUST_LOGIN:-N}" | tr '[:lower:]' '[:upper:]')" = "Y" ]; then
+  /app/apimain init-jwt-file --file "${RUSTDESK_API_JWT_KEY_FILE:-/app/data/.bootstrap/jwt.key}" || {
+    echo "Failed to initialize private JWT key."
+    /run/s6/basedir/bin/halt
+    exit 1
+  }
+fi

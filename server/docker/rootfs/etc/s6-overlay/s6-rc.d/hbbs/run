@@ -1,6 +1,10 @@
 #!/command/with-contenv sh
 sleep 2
 cd /data
+if [ -z "${RUSTDESK_API_JWT_KEY:-}" ] && [ -s "${RUSTDESK_API_JWT_KEY_FILE:-/app/data/.bootstrap/jwt.key}" ]; then
+  RUSTDESK_API_JWT_KEY="$(cat "${RUSTDESK_API_JWT_KEY_FILE:-/app/data/.bootstrap/jwt.key}")"
+  export RUSTDESK_API_JWT_KEY
+fi
 PARAMS=
 [ "${ENCRYPTED_ONLY}" = "1" ] && PARAMS="-k _"
 /usr/bin/hbbs -r $RELAY $PARAMS

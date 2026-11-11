@@ -6,7 +6,7 @@ on:
       tag:
         description: Reviewed linux/amd64 image tag
         required: true
-        default: reviewed-20261111-v1.1
+        default: reviewed-20261111-v1.2
         type: string
 
 permissions:
@@ -37,8 +37,8 @@ jobs:
       - name: Test reviewed API changes
         run: |
           go mod verify
-          go test -mod=readonly -race ./lib/jwt ./http/controller/api ./global
-          go vet -mod=readonly ./lib/jwt
+          go test -mod=readonly -race ./lib/jwt ./lib/bootstrap ./http/controller/api ./global
+          go vet -mod=readonly ./lib/jwt ./lib/bootstrap
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: lejianwen/rustdesk-api-web

@@ -1,15 +1,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/lejianwen/rustdesk-api/v2/config"
 	"github.com/lejianwen/rustdesk-api/v2/global"
 	"github.com/lejianwen/rustdesk-api/v2/http"
+	"github.com/lejianwen/rustdesk-api/v2/lib/bootstrap"
 	"github.com/lejianwen/rustdesk-api/v2/lib/cache"
 	"github.com/lejianwen/rustdesk-api/v2/lib/jwt"
 	"github.com/lejianwen/rustdesk-api/v2/lib/lock"
@@ -50,22 +54,51 @@ var rootCmd = &cobra.Command{
 
 var resetPwdCmd = &cobra.Command{
 	Use:     "reset-admin-pwd [pwd]",
-	Example: "reset-admin-pwd 123456",
+	Example: "reset-admin-pwd --stdin",
 	Short:   "Reset Admin Password",
-	Args:    cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		pwd := args[0]
+	Args: func(cmd *cobra.Command, args []string) error {
+		if resetPasswordStdin {
+			return cobra.NoArgs(cmd, args)
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var pwd string
+		if resetPasswordStdin {
+			data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 35))
+			if err != nil {
+				return errors.New("failed to read password from stdin")
+			}
+			pwd = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+			if len(data) > 34 || len(pwd) < 12 || len(pwd) > 32 || strings.ContainsAny(pwd, "\r\n") {
+				return errors.New("stdin password must be one line of 12 to 32 bytes")
+			}
+		} else {
+			pwd = args[0]
+		}
 		admin := service.AllService.UserService.InfoById(1)
 		if admin.Id == 0 {
-			global.Logger.Warn("user not found! ")
-			return
+			return errors.New("administrator not found")
 		}
 		err := service.AllService.UserService.UpdatePassword(admin, pwd)
 		if err != nil {
-			global.Logger.Error("reset password fail! ", err)
-			return
+			return errors.New("failed to reset administrator password")
 		}
 		global.Logger.Info("reset password success! ")
+		return nil
+	},
+}
+
+var resetPasswordStdin bool
+var jwtFilePath string
+var initJWTFileCmd = &cobra.Command{
+	Use:              "init-jwt-file",
+	Short:            "Initialize a private persistent JWT key without starting the API",
+	Args:             cobra.NoArgs,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_, err := bootstrap.EnsureSecret(jwtFilePath)
+		return err
 	},
 }
 var resetUserPwdCmd = &cobra.Command{
@@ -101,11 +134,17 @@ var resetUserPwdCmd = &cobra.Command{
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&global.ConfigPath, "config", "c", "./conf/config.yaml", "choose config file")
-	rootCmd.AddCommand(resetPwdCmd, resetUserPwdCmd)
+	resetPwdCmd.Flags().BoolVar(&resetPasswordStdin, "stdin", false, "Read the password from stdin instead of command arguments")
+	initJWTFileCmd.Flags().StringVar(&jwtFilePath, "file", bootstrap.JWTFile, "Private JWT key file")
+	rootCmd.AddCommand(resetPwdCmd, resetUserPwdCmd, initJWTFileCmd)
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		global.Logger.Error(err)
+		if global.Logger != nil {
+			global.Logger.Error(err)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }
@@ -195,7 +234,13 @@ func InitGlobal() {
 	}
 
 	//jwt
-	//fmt.Println(global.Config.Jwt.PrivateKey)
+	if global.Config.Jwt.Key == "" && global.Config.Jwt.KeyFile != "" {
+		key, err := bootstrap.ReadSecret(global.Config.Jwt.KeyFile)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			global.Logger.Fatalf("failed to read private JWT key file: %v", err)
+		}
+		global.Config.Jwt.Key = key
+	}
 	global.Jwt = jwt.NewJwt(global.Config.Jwt.Key, global.Config.Jwt.ExpireDuration)
 	//locker
 	global.Lock = lock.NewLocal()
@@ -211,6 +256,12 @@ func InitGlobal() {
 	})
 	global.LoginLimiter.RegisterProvider(utils.B64StringCaptchaProvider{})
 	DatabaseAutoUpdate()
+	localizer := global.Localizer("")
+	defaultGroup, _ := localizer.LocalizeMessage(&i18n.Message{ID: "DefaultGroup"})
+	shareGroup, _ := localizer.LocalizeMessage(&i18n.Message{ID: "ShareGroup"})
+	if err := bootstrap.InitializeAdmin(global.DB, defaultGroup, shareGroup, bootstrap.AdminPasswordFile); err != nil {
+		global.Logger.Fatalf("failed to initialize administrator: %v", err)
+	}
 }
 
 func DatabaseAutoUpdate() {
@@ -311,47 +362,4 @@ func Migrate(version uint) {
 		global.Logger.Error("migrate err :=>", err)
 	}
 	global.DB.Create(&model.Version{Version: version})
-	//如果是初次则创建一个默认用户
-	var vc int64
-	global.DB.Model(&model.Version{}).Count(&vc)
-	if vc == 1 {
-		localizer := global.Localizer("")
-		defaultGroup, _ := localizer.LocalizeMessage(&i18n.Message{
-			ID: "DefaultGroup",
-		})
-		group := &model.Group{
-			Name: defaultGroup,
-			Type: model.GroupTypeDefault,
-		}
-		service.AllService.GroupService.Create(group)
-
-		shareGroup, _ := localizer.LocalizeMessage(&i18n.Message{
-			ID: "ShareGroup",
-		})
-		groupShare := &model.Group{
-			Name: shareGroup,
-			Type: model.GroupTypeShare,
-		}
-		service.AllService.GroupService.Create(groupShare)
-		//是true
-		is_admin := true
-		admin := &model.User{
-			Username: "admin",
-			Nickname: "Admin",
-			Status:   model.COMMON_STATUS_ENABLE,
-			IsAdmin:  &is_admin,
-			GroupId:  1,
-		}
-
-		// 生成随机密码
-		pwd := utils.RandomString(8)
-		global.Logger.Info("Admin Password Is: ", pwd)
-		var err error
-		admin.Password, err = utils.EncryptPassword(pwd)
-		if err != nil {
-			global.Logger.Fatalf("failed to generate admin password: %v", err)
-		}
-		global.DB.Create(admin)
-	}
-
 }
