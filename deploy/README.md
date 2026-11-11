@@ -1,8 +1,9 @@
 # Deploy with Docker Compose
 
 This original-style Compose example is for a new Debian x86_64 server.
-Replace `117.24.15.98` with the server's actual public address and adjust published
-ports and advertised addresses together. YAML is configuration, not a Bash command.
+Set `RUSTDESK_PUBLIC_HOST` to the server's public IPv4 address or domain, without a
+scheme or port. Compose rejects an unset or empty value. Adjust published ports
+and advertised addresses together. YAML is configuration, not a Bash command.
 
 ## Prerequisites
 
@@ -34,14 +35,21 @@ docker ps -q | xargs -r docker inspect --format \
 
 Use the YAML in a Compose management panel, or save it as `docker-compose.yml` and
 run from its directory. No manual JWT entry or pre-existing key pair is needed for
-a new server.
+a new server. In a management panel, set `RUSTDESK_PUBLIC_HOST` in the stack's
+deployment environment. For a terminal deployment, set and export it before
+running Compose:
 
 ```bash
+read -rp 'Server public IPv4 address or domain: ' RUSTDESK_PUBLIC_HOST
+export RUSTDESK_PUBLIC_HOST
 docker compose config --quiet
 docker compose pull
 docker compose up -d --wait --wait-timeout 180
 docker compose ps
 ```
+
+Keep the same variable available for later Compose commands. Do not commit
+deployment-specific environment files to this public repository.
 
 ## Private Bootstrap Credentials
 

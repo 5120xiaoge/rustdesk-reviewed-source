@@ -36,6 +36,12 @@ replaced by placeholders in this snapshot. No executable source was changed duri
 snapshot preparation. Root documentation, deployment examples, and the anonymous
 verification workflow are additional files, not files used in the original image.
 
+The upstream sample device records have since been removed from
+`server/db_v2.sqlite3`. It retains only the schema needed by SQLx compile-time
+queries and is not a production database. Deployment examples now require a
+`RUSTDESK_PUBLIC_HOST` value instead of embedding a server address. These privacy
+changes do not alter the previously published images.
+
 ## Review Scope
 
 Focused fixes cover server/API JWT validation, signing-key logging, file-based key

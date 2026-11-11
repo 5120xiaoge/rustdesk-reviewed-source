@@ -21,15 +21,33 @@ jobs:
     timeout-minutes: 15
     env:
       IMAGE: ghcr.io/5120xiaoge/rustdesk-server-s6-reviewed@sha256:bfa791c8cb6662ce157ca4c583df101bdcc44a5d97106d6bd1b3d259b8cf1aae
+      RUSTDESK_PUBLIC_HOST: rustdesk.example.test
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - name: Validate original-style Compose without manual JWT input
+      - name: Validate Compose requirements and schema-only database
         shell: bash
         run: |
           set -eu
+          if env -u RUSTDESK_PUBLIC_HOST docker compose -f deploy/docker-compose.yml config --quiet 2>/dev/null; then
+            echo 'Compose must reject a missing RUSTDESK_PUBLIC_HOST' >&2
+            exit 1
+          fi
+          if RUSTDESK_PUBLIC_HOST='' docker compose -f deploy/docker-compose.yml config --quiet 2>/dev/null; then
+            echo 'Compose must reject an empty RUSTDESK_PUBLIC_HOST' >&2
+            exit 1
+          fi
           docker compose -f deploy/docker-compose.yml config --quiet
+          python3 - <<'PY'
+          import sqlite3
+
+          db = sqlite3.connect("file:server/db_v2.sqlite3?mode=ro", uri=True)
+          assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+          assert db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == [("peer",)]
+          assert db.execute("SELECT count(*) FROM peer").fetchone()[0] == 0
+          db.close()
+          PY
       - name: Pull with an empty Docker credential directory
         if: inputs.scope == 'anonymous'
         shell: bash
